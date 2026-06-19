@@ -42,6 +42,8 @@ const NAME_MAP = {
   'ADBE':'Adobe','INTU':'Intuit','PANW':'Palo Alto',
   'ARM':'ARM Holdings','SMCI':'超微电脑','MRVL':'迈威尔',
   'SHOP':'Shopify','PYPL':'PayPal','COIN':'Coinbase',
+  // A股（按原始代码索引，用于 skipped 列表展示）
+  '600519':'贵州茅台','000858':'五粮液',
 }
 
 async function fetchFundHoldings(fundCode) {
@@ -63,6 +65,7 @@ async function fetchFundHoldings(fundCode) {
   if (positions.length === 0) throw new Error('无持仓数据')
 
   const holdings = []
+  const skipped  = []
 
   for (const pos of positions) {
     const rawCode  = (pos.ZQDM || '').trim().toUpperCase()
@@ -78,8 +81,15 @@ async function fetchFundHoldings(fundCode) {
       mappedCode = rawCode
     }
 
-    // 3. 明确标记为空（如A股）或无法映射 → 跳过
-    if (!mappedCode) continue
+    // 3. 明确标记为空（如A股）或无法映射 → 无行情，但仍带回告知前端
+    if (!mappedCode) {
+      skipped.push({
+        rawCode,
+        name:   NAME_MAP[rawCode] || cnName || rawCode,
+        weight: Math.round(weight * 10) / 10
+      })
+      continue
+    }
 
     holdings.push({
       code:   mappedCode,
@@ -91,7 +101,7 @@ async function fetchFundHoldings(fundCode) {
     })
   }
 
-  return holdings
+  return { holdings, skipped }
 }
 
 module.exports = async (req, res) => {
@@ -105,13 +115,15 @@ module.exports = async (req, res) => {
     return res.status(400).json({ code:-1, error:'codes 不能为空' })
   }
 
-  const result = {}, errors = {}
+  const result = {}, skipped = {}, errors = {}
 
   for (const fundCode of codes) {
     try {
-      const holdings = await fetchFundHoldings(fundCode)
+      const { holdings, skipped: skippedHoldings } = await fetchFundHoldings(fundCode)
       if (holdings.length > 0) result[fundCode] = holdings
       else errors[fundCode] = '持仓为空'
+      // 无对应美股行情的持仓（如A股），单独带回方便前端展示
+      if (skippedHoldings.length > 0) skipped[fundCode] = skippedHoldings
     } catch(e) {
       errors[fundCode] = e.message
       console.error(`[holdings] ${fundCode}:`, e.message)
@@ -126,6 +138,7 @@ module.exports = async (req, res) => {
 
   return res.status(200).json({
     code: 0, data: result, errors,
+    skipped,    // ← 无对应美股行情的持仓（如A股）
     allCodes,   // ← 前端用这个动态构建 quote 请求
     server_ts: Date.now()
   })
